@@ -1,0 +1,76 @@
+\documentclass[12pt,letterpaper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{parskip}
+\usepackage{xcolor}
+\usepackage{mdframed}
+\usepackage{hyperref}
+\usepackage{graphicx}
+
+\hypersetup{colorlinks=true, linkcolor=blue, urlcolor=blue}
+\setlength{\parindent}{0pt}
+
+<% for name, hex in color_defs.items() %>
+\definecolor{<< name >>}{HTML}{<< hex.lstrip('#') >>}
+<% endfor %>
+
+\newcommand{\verseref}[1]{\textbf{\textsuperscript{#1}}\ }
+\newenvironment{mycommentary}{%
+  \begin{mdframed}[backgroundcolor=gray!10, linecolor=gray!40, innerleftmargin=8pt, innerrightmargin=8pt]%
+  \small\itshape
+}{%
+  \end{mdframed}
+}
+
+\begin{document}
+
+\begin{center}
+  {\Large\textbf{<< book >>}}\\[4pt]
+  <% if chapters|length > 1 %>
+  {\large Chapters << chapters|join(', ') >> \quad\textit{(<< edition >> edition)}}
+  <% else %>
+  {\large Chapter << chapters[0] >> \quad\textit{(<< edition >> edition)}}
+  <% endif %>
+\end{center}
+
+\medskip\hrule\medskip
+
+<% for chapter_num, verses in chapters_data %>
+<% if chapters|length > 1 %>
+
+{\large\textbf{Chapter << chapter_num >>}}\par\medskip
+<% endif %>
+<% for v in verses %>
+\verseref{<< v.verse >>}<< v.text >>
+
+<% if include_commentary and v.commentary %>
+\begin{mycommentary}
+<% for note in v.commentary %>
+<% if note.date %>\textit{\footnotesize << note.date|latex_escape >>}\par
+<% endif %><< note.body|latex_escape >><% if not loop.last %>\par\medskip<% endif %>
+
+<% endfor %>
+\end{mycommentary}
+<% endif %>
+
+<% for link in v.cross_links %>
+\par\small\textit{See also: \textbf{<< link.target >>}<% if link.note %> --- << link.note|latex_escape >><% endif %>}
+<% endfor %>
+
+<% if include_media %>
+<% for img in v.images %>
+\begin{center}
+\includegraphics[max width=0.8\textwidth]{<< img.path >>}
+<% if img.caption %>\par\small\textit{<< img.caption|latex_escape >>}<% endif %>
+\end{center}
+<% endfor %>
+<% for lnk in v.links %>
+\par\small\href{<< lnk.url >>}{\texttt{<< lnk.url|truncate(60)|latex_escape >>}}<% if lnk.og_title %>: << lnk.og_title|latex_escape >><% endif %>
+<% endfor %>
+<% endif %>
+
+<% endfor %>
+<% endfor %>
+
+\end{document}

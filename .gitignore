@@ -1,0 +1,60 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+.env/
+*.conda/
+
+# ── App-specific ──────────────────────────────────────────────────────────────
+# User database (contains personal notes, highlights, commentary)
+db/journal.db
+db/journal.db-shm
+db/journal.db-wal
+
+# Export artefacts
+output/export.tex
+output/export.pdf
+output/export.aux
+output/export.log
+output/export.out
+output/export.fdb_latexmk
+output/export.fls
+
+# App config (contains theme preference and API key)
+config.ini
+
+# Imported CSV — personal data, not for version control
+NotesDownload.csv
+
+# ── macOS ─────────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# ── Claude Code memory (local AI assistant state — not for version control) ───
+.claude/
+
+# ── IDE / editors ─────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ── Byte-compiled Qt resources ────────────────────────────────────────────────
+*.qrc.py
