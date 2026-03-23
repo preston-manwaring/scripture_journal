@@ -18,10 +18,13 @@ env/
 *.conda/
 
 # ── App-specific ──────────────────────────────────────────────────────────────
-# User database (contains personal notes, highlights, commentary)
+# Databases (both are built automatically on first launch from source files)
 db/journal.db
 db/journal.db-shm
 db/journal.db-wal
+db/dict.db
+db/dict.db-shm
+db/dict.db-wal
 
 # Export artefacts
 output/export.tex
