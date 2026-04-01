@@ -1,25 +1,17 @@
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
-    QPushButton, QComboBox, QSpinBox, QLineEdit, QGroupBox, QFrame,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea,
+    QPushButton, QComboBox, QSpinBox, QLineEdit, QFrame, QToolTip,
 )
-from PyQt6.QtCore import pyqtSignal, Qt
+from PyQt6.QtCore import pyqtSignal, Qt, QPoint
+from PyQt6.QtGui import QCursor
+
 from backend.db_api import (
-    BOOK_ORDER, get_books, get_crosslinks, create_crosslink, delete_crosslink
+    BOOK_ORDER, get_books, get_crosslinks, create_crosslink, delete_crosslink,
+    get_verse_range_text,
 )
 from ui.themes import DARK, ELEVATED, OVERLAY, OVERLAY1, DIM, SUBTEXT, TEXT, ACCENT, RED
 
 _BTN = "QPushButton {{ background:{bg}; color:{fg}; border:none; border-radius:4px; padding:4px 10px; font-size:12px; }}"
-
-
-def _list_style() -> str:
-    return f"""
-        QListWidget {{
-            background:{ELEVATED}; border:1px solid {OVERLAY}; border-radius:6px;
-            color:{TEXT}; font-size:12px;
-        }}
-        QListWidget::item {{ padding:5px 8px; border-bottom:1px solid {OVERLAY}; }}
-        QListWidget::item:selected {{ background:{OVERLAY}; }}
-    """
 
 
 def _combo_style() -> str:
@@ -39,8 +31,115 @@ def _spin_style() -> str:
     )
 
 
+def _ref_label(link: dict, direction: str) -> str:
+    """Format a human-readable verse reference for a link."""
+    if direction == "outbound":
+        book, ch, vs = link["target_book"], link["target_chapter"], link["target_verse"]
+        ve = link.get("target_verse_end")
+    else:
+        book, ch, vs = link["source_book"], link["source_chapter"], link["source_verse"]
+        ve = None  # inbound links don't store a range relative to source
+    if ve and ve > vs:
+        return f"{book} {ch}:{vs}–{ve}"
+    return f"{book} {ch}:{vs}"
+
+
+class _LinkRow(QFrame):
+    """Single clickable cross-link row with hover verse preview."""
+
+    navigate = pyqtSignal(str, int, int)   # book, chapter, verse
+    delete_requested = pyqtSignal(int)     # link id
+
+    def __init__(self, link: dict, direction: str, edition_getter, parent=None):
+        super().__init__(parent)
+        self._link = link
+        self._direction = direction
+        self._get_edition = edition_getter
+        self._tooltip_text: str | None = None
+
+        self.setStyleSheet(f"""
+            _LinkRow, QFrame {{
+                background: {ELEVATED}; border-radius: 5px;
+                border: 1px solid {OVERLAY};
+            }}
+            _LinkRow:hover, QFrame:hover {{ border-color: {ACCENT}; }}
+        """)
+        self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+        self.setMouseTracking(True)
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(8, 5, 8, 5)
+        row.setSpacing(6)
+
+        arrow = QLabel("→" if direction == "outbound" else "←")
+        arrow.setStyleSheet(f"color: {ACCENT}; font-size: 13px; background: transparent; border: none;")
+        row.addWidget(arrow)
+
+        ref = _ref_label(link, direction)
+        ref_lbl = QLabel(ref)
+        ref_lbl.setStyleSheet(
+            f"color: {ACCENT}; font-size: 12px; text-decoration: underline; "
+            f"background: transparent; border: none;"
+        )
+        row.addWidget(ref_lbl)
+
+        note = link.get("note") or ""
+        if note:
+            note_lbl = QLabel(f"— {note}")
+            note_lbl.setStyleSheet(f"color: {SUBTEXT}; font-size: 11px; background: transparent; border: none;")
+            note_lbl.setWordWrap(True)
+            row.addWidget(note_lbl, 1)
+        else:
+            row.addStretch()
+
+        del_btn = QPushButton("✕")
+        del_btn.setFixedSize(20, 20)
+        del_btn.setStyleSheet(
+            f"QPushButton {{ background: transparent; color: {SUBTEXT}; border: none; font-size: 11px; }}"
+            f"QPushButton:hover {{ color: {RED}; }}"
+        )
+        del_btn.clicked.connect(lambda: self.delete_requested.emit(link["id"]))
+        row.addWidget(del_btn)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            link = self._link
+            if self._direction == "outbound":
+                self.navigate.emit(link["target_book"], link["target_chapter"], link["target_verse"])
+            else:
+                self.navigate.emit(link["source_book"], link["source_chapter"], link["source_verse"])
+        super().mousePressEvent(event)
+
+    def enterEvent(self, event):
+        if self._tooltip_text is None:
+            self._tooltip_text = self._fetch_verse_text()
+        if self._tooltip_text:
+            QToolTip.showText(QCursor.pos(), self._tooltip_text, self)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        QToolTip.hideText()
+        super().leaveEvent(event)
+
+    def _fetch_verse_text(self) -> str:
+        link = self._link
+        edition = self._get_edition()
+        if self._direction == "outbound":
+            return get_verse_range_text(
+                link["target_book"], link["target_chapter"],
+                link["target_verse"], link.get("target_verse_end"),
+                edition,
+            )
+        else:
+            return get_verse_range_text(
+                link["source_book"], link["source_chapter"],
+                link["source_verse"], None,
+                edition,
+            )
+
+
 class CrossLinkWidget(QWidget):
-    navigate_to = pyqtSignal(str, int, int)  # book, chapter, verse
+    navigate_to = pyqtSignal(str, int, int)
     changed = pyqtSignal()
 
     def __init__(self, parent=None):
@@ -48,10 +147,11 @@ class CrossLinkWidget(QWidget):
         self._book: str | None = None
         self._chapter: int | None = None
         self._verse: int | None = None
+        self._edition_getter = lambda: "2013"  # overridden by main_window
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 8, 12, 8)
-        layout.setSpacing(10)
+        layout.setSpacing(8)
 
         self._verse_label = QLabel("No verse selected")
         self._verse_label.setStyleSheet(f"color:{DIM}; font-size:12px; font-style:italic;")
@@ -62,34 +162,40 @@ class CrossLinkWidget(QWidget):
         out_label.setStyleSheet(f"color:{SUBTEXT}; font-size:12px; font-weight:bold;")
         layout.addWidget(out_label)
 
-        self._out_list = QListWidget()
-        self._out_list.setStyleSheet(_list_style())
-        self._out_list.setMaximumHeight(120)
-        self._out_list.itemDoubleClicked.connect(lambda item: self._navigate(item, "outbound"))
-        layout.addWidget(self._out_list)
-
-        out_btn_row = QHBoxLayout()
-        self._out_del_btn = QPushButton("Delete selected")
-        self._out_del_btn.setEnabled(False)
-        self._out_del_btn.setStyleSheet(_BTN.format(bg=RED, fg=DARK))
-        self._out_del_btn.clicked.connect(lambda: self._delete_selected(self._out_list))
-        out_btn_row.addWidget(self._out_del_btn)
-        out_btn_row.addStretch()
-        layout.addLayout(out_btn_row)
-        self._out_list.itemSelectionChanged.connect(
-            lambda: self._out_del_btn.setEnabled(bool(self._out_list.selectedItems()))
+        self._out_scroll = QScrollArea()
+        self._out_scroll.setWidgetResizable(True)
+        self._out_scroll.setMaximumHeight(130)
+        self._out_scroll.setStyleSheet(
+            f"QScrollArea {{ background: {DARK}; border: none; }}"
+            f"QScrollBar:vertical {{ background:{DARK}; width:6px; }}"
+            f"QScrollBar::handle:vertical {{ background:{OVERLAY}; border-radius:3px; }}"
         )
+        self._out_container = QWidget()
+        self._out_container.setStyleSheet(f"background: {DARK};")
+        self._out_layout = QVBoxLayout(self._out_container)
+        self._out_layout.setContentsMargins(0, 0, 0, 0)
+        self._out_layout.setSpacing(3)
+        self._out_layout.addStretch()
+        self._out_scroll.setWidget(self._out_container)
+        layout.addWidget(self._out_scroll)
 
         # ── Inbound links ─────────────────────────────────────────────────────
         in_label = QLabel("Linked from:")
         in_label.setStyleSheet(f"color:{SUBTEXT}; font-size:12px; font-weight:bold;")
         layout.addWidget(in_label)
 
-        self._in_list = QListWidget()
-        self._in_list.setStyleSheet(_list_style())
-        self._in_list.setMaximumHeight(100)
-        self._in_list.itemDoubleClicked.connect(lambda item: self._navigate(item, "inbound"))
-        layout.addWidget(self._in_list)
+        self._in_scroll = QScrollArea()
+        self._in_scroll.setWidgetResizable(True)
+        self._in_scroll.setMaximumHeight(100)
+        self._in_scroll.setStyleSheet(self._out_scroll.styleSheet())
+        self._in_container = QWidget()
+        self._in_container.setStyleSheet(f"background: {DARK};")
+        self._in_layout = QVBoxLayout(self._in_container)
+        self._in_layout.setContentsMargins(0, 0, 0, 0)
+        self._in_layout.setSpacing(3)
+        self._in_layout.addStretch()
+        self._in_scroll.setWidget(self._in_container)
+        layout.addWidget(self._in_scroll)
 
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
@@ -102,7 +208,7 @@ class CrossLinkWidget(QWidget):
         layout.addWidget(add_label)
 
         form = QHBoxLayout()
-        form.setSpacing(6)
+        form.setSpacing(4)
 
         self._book_combo = QComboBox()
         self._book_combo.setStyleSheet(_combo_style())
@@ -118,12 +224,24 @@ class CrossLinkWidget(QWidget):
         self._v_spin.setRange(1, 999)
         self._v_spin.setPrefix("v.")
         self._v_spin.setStyleSheet(_spin_style())
+        self._v_spin.valueChanged.connect(self._on_verse_start_changed)
         form.addWidget(self._v_spin)
+
+        dash = QLabel("–")
+        dash.setStyleSheet(f"color:{SUBTEXT}; font-size:12px;")
+        form.addWidget(dash)
+
+        self._v_end_spin = QSpinBox()
+        self._v_end_spin.setRange(1, 999)
+        self._v_end_spin.setPrefix("v.")
+        self._v_end_spin.setStyleSheet(_spin_style())
+        self._v_end_spin.setToolTip("End verse (for a range — leave same as start for single verse)")
+        form.addWidget(self._v_end_spin)
 
         layout.addLayout(form)
 
         self._note_edit = QLineEdit()
-        self._note_edit.setPlaceholderText("Optional note...")
+        self._note_edit.setPlaceholderText("Optional note…")
         self._note_edit.setStyleSheet(
             f"QLineEdit {{ background:{ELEVATED}; color:{TEXT}; border:1px solid {OVERLAY1};"
             f" border-radius:4px; padding:4px 8px; font-size:12px; }}"
@@ -136,9 +254,11 @@ class CrossLinkWidget(QWidget):
         layout.addWidget(add_btn)
         layout.addStretch()
 
-        # Populate book combo
         books = get_books()
         self._book_combo.addItems(books)
+
+    def set_edition_getter(self, getter):
+        self._edition_getter = getter
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -152,42 +272,42 @@ class CrossLinkWidget(QWidget):
     # ── Private ───────────────────────────────────────────────────────────────
 
     def _refresh(self):
-        self._out_list.clear()
-        self._in_list.clear()
+        # Clear outbound
+        while self._out_layout.count() > 1:
+            item = self._out_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        # Clear inbound
+        while self._in_layout.count() > 1:
+            item = self._in_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
         if self._book is None:
             return
+
         links = get_crosslinks(self._book, self._chapter, self._verse)
 
         for link in links["outbound"]:
-            target = f"{link['target_book']} {link['target_chapter']}:{link['target_verse']}"
-            note = f"  — {link['note']}" if link["note"] else ""
-            item = QListWidgetItem(f"-> {target}{note}")
-            item.setData(Qt.ItemDataRole.UserRole, ("outbound", link))
-            self._out_list.addItem(item)
+            row = _LinkRow(link, "outbound", self._edition_getter)
+            row.navigate.connect(self.navigate_to)
+            row.delete_requested.connect(self._on_delete)
+            self._out_layout.insertWidget(self._out_layout.count() - 1, row)
 
         for link in links["inbound"]:
-            source = f"{link['source_book']} {link['source_chapter']}:{link['source_verse']}"
-            note = f"  — {link['note']}" if link["note"] else ""
-            item = QListWidgetItem(f"<- {source}{note}")
-            item.setData(Qt.ItemDataRole.UserRole, ("inbound", link))
-            self._in_list.addItem(item)
+            row = _LinkRow(link, "inbound", self._edition_getter)
+            row.navigate.connect(self.navigate_to)
+            row.delete_requested.connect(self._on_delete)
+            self._in_layout.insertWidget(self._in_layout.count() - 1, row)
 
-    def _navigate(self, item: QListWidgetItem, direction: str):
-        data = item.data(Qt.ItemDataRole.UserRole)
-        _, link = data
-        if direction == "outbound":
-            self.navigate_to.emit(link["target_book"], link["target_chapter"], link["target_verse"])
-        else:
-            self.navigate_to.emit(link["source_book"], link["source_chapter"], link["source_verse"])
-
-    def _delete_selected(self, lst: QListWidget):
-        item = lst.currentItem()
-        if not item:
-            return
-        _, link = item.data(Qt.ItemDataRole.UserRole)
-        delete_crosslink(link["id"])
+    def _on_delete(self, link_id: int):
+        delete_crosslink(link_id)
         self._refresh()
         self.changed.emit()
+
+    def _on_verse_start_changed(self, value: int):
+        if self._v_end_spin.value() < value:
+            self._v_end_spin.setValue(value)
 
     def _on_add(self):
         if self._book is None:
@@ -195,10 +315,13 @@ class CrossLinkWidget(QWidget):
         target_book = self._book_combo.currentText()
         target_ch = self._ch_spin.value()
         target_v = self._v_spin.value()
+        target_v_end = self._v_end_spin.value()
         note = self._note_edit.text().strip() or None
         create_crosslink(
             self._book, self._chapter, self._verse,
-            target_book, target_ch, target_v, note,
+            target_book, target_ch, target_v,
+            note=note,
+            target_verse_end=target_v_end if target_v_end > target_v else None,
         )
         self._note_edit.clear()
         self._refresh()

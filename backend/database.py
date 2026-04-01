@@ -62,15 +62,16 @@ def init_db():
                 ON commentary(book, chapter, verse);
 
             CREATE TABLE IF NOT EXISTS cross_links (
-                id             INTEGER PRIMARY KEY,
-                source_book    TEXT NOT NULL,
-                source_chapter INTEGER NOT NULL,
-                source_verse   INTEGER NOT NULL,
-                target_book    TEXT NOT NULL,
-                target_chapter INTEGER NOT NULL,
-                target_verse   INTEGER NOT NULL,
-                note           TEXT,
-                created_at     TEXT NOT NULL
+                id               INTEGER PRIMARY KEY,
+                source_book      TEXT NOT NULL,
+                source_chapter   INTEGER NOT NULL,
+                source_verse     INTEGER NOT NULL,
+                target_book      TEXT NOT NULL,
+                target_chapter   INTEGER NOT NULL,
+                target_verse     INTEGER NOT NULL,
+                target_verse_end INTEGER,
+                note             TEXT,
+                created_at       TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_crosslinks_source
                 ON cross_links(source_book, source_chapter, source_verse);
@@ -138,5 +139,26 @@ def init_db():
             );
             CREATE INDEX IF NOT EXISTS idx_word_highlights
                 ON word_highlights(book, chapter, verse, edition);
+
+            CREATE TABLE IF NOT EXISTS tags (
+                id   INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE COLLATE NOCASE
+            );
+
+            CREATE TABLE IF NOT EXISTS note_tags (
+                note_id INTEGER NOT NULL,
+                tag_id  INTEGER NOT NULL,
+                PRIMARY KEY (note_id, tag_id),
+                FOREIGN KEY (note_id) REFERENCES commentary(id) ON DELETE CASCADE,
+                FOREIGN KEY (tag_id)  REFERENCES tags(id)       ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_note_tags_note ON note_tags(note_id);
+            CREATE INDEX IF NOT EXISTS idx_note_tags_tag  ON note_tags(tag_id);
         """)
+        # Live migration: add target_verse_end if absent (existing databases)
+        try:
+            conn.execute("ALTER TABLE cross_links ADD COLUMN target_verse_end INTEGER")
+            conn.commit()
+        except Exception:
+            pass  # column already exists
     conn.close()

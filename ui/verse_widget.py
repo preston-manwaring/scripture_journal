@@ -1,4 +1,4 @@
-from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QMenu
+from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QMenu, QToolTip
 from PyQt6.QtCore import pyqtSignal, Qt, QEvent, QPointF
 from PyQt6.QtGui import QCursor, QAction, QTextDocument, QTextCursor
 
@@ -71,16 +71,100 @@ def _make_word_hl_html(plain_text: str, word_highlights: list[dict]) -> str:
     return "".join(parts)
 
 
+class _BadgeLabel(QLabel):
+    """Clickable badge that shows a lazy-fetched preview tooltip on hover."""
+
+    clicked = pyqtSignal(str)   # badge_type: "commentary" | "crosslinks" | "media"
+
+    def __init__(self, badge_type: str, label: str, color: str,
+                 book: str, chapter: int, verse: int, parent=None):
+        super().__init__(label, parent)
+        self._badge_type = badge_type
+        self._book = book
+        self._chapter = chapter
+        self._verse = verse
+        self._preview: str | None = None
+        self.setStyleSheet(BADGE_STYLE.format(color=color))
+        self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit(self._badge_type)
+        super().mousePressEvent(event)
+
+    def enterEvent(self, event):
+        if self._preview is None:
+            self._preview = self._fetch_preview()
+        if self._preview:
+            QToolTip.showText(QCursor.pos(), self._preview, self)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        QToolTip.hideText()
+        super().leaveEvent(event)
+
+    def _fetch_preview(self) -> str:
+        from backend.db_api import get_commentary, get_crosslinks, get_media
+        try:
+            if self._badge_type == "commentary":
+                notes = get_commentary(self._book, self._chapter, self._verse)
+                if not notes:
+                    return ""
+                lines = []
+                for n in notes[:3]:
+                    snippet = n["body"][:120].replace("\n", " ")
+                    if len(n["body"]) > 120:
+                        snippet += "…"
+                    lines.append(snippet)
+                return "\n\n".join(lines)
+
+            elif self._badge_type == "crosslinks":
+                links = get_crosslinks(self._book, self._chapter, self._verse)
+                parts = []
+                for lk in links["outbound"][:5]:
+                    ve = lk.get("target_verse_end")
+                    ref = f"{lk['target_book']} {lk['target_chapter']}:{lk['target_verse']}"
+                    if ve and ve > lk["target_verse"]:
+                        ref += f"–{ve}"
+                    if lk.get("note"):
+                        ref += f"  — {lk['note']}"
+                    parts.append(f"→ {ref}")
+                for lk in links["inbound"][:3]:
+                    ref = f"{lk['source_book']} {lk['source_chapter']}:{lk['source_verse']}"
+                    parts.append(f"← {ref}")
+                return "\n".join(parts)
+
+            elif self._badge_type == "media":
+                items = get_media(self._book, self._chapter, self._verse)
+                parts = []
+                for m in items[:4]:
+                    if m.get("og_title"):
+                        parts.append(m["og_title"])
+                    elif m.get("caption"):
+                        parts.append(m["caption"])
+                    elif m.get("filename"):
+                        parts.append(m["filename"])
+                    else:
+                        parts.append("(media attachment)")
+                return "\n".join(parts)
+        except Exception:
+            pass
+        return ""
+
+
 class VerseWidget(QFrame):
     clicked = pyqtSignal(int)                        # verse number
     lookup_word = pyqtSignal(str)                    # word to look up in dictionary
     word_hl_requested = pyqtSignal(int, int, int, str)   # verse, start, end, color
     word_hl_remove_requested = pyqtSignal(int)           # word_highlight id
+    badge_clicked = pyqtSignal(int, str)                 # verse, badge_type
 
-    def __init__(self, verse: int, text: str, badges: dict,
+    def __init__(self, book: str, chapter: int, verse: int, text: str, badges: dict,
                  word_highlights: list[dict] | None = None,
                  parent=None):
         super().__init__(parent)
+        self._book = book
+        self._chapter = chapter
         self._verse = verse
         self._plain_text = text           # always the raw verse text
         self._selected = False
@@ -125,16 +209,19 @@ class VerseWidget(QFrame):
         bcol_layout.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
 
         if badges.get("commentary"):
-            b = QLabel(f"\u270f {badges['commentary']}")
-            b.setStyleSheet(BADGE_STYLE.format(color=ACCENT))
+            b = _BadgeLabel("commentary", f"\u270f {badges['commentary']}",
+                            ACCENT, book, chapter, verse)
+            b.clicked.connect(lambda t, v=verse: self.badge_clicked.emit(v, t))
             bcol_layout.addWidget(b)
         if badges.get("crosslinks"):
-            b = QLabel(f"\u2194 {badges['crosslinks']}")
-            b.setStyleSheet(BADGE_STYLE.format(color="#a6e3a1"))
+            b = _BadgeLabel("crosslinks", f"\u2194 {badges['crosslinks']}",
+                            "#a6e3a1", book, chapter, verse)
+            b.clicked.connect(lambda t, v=verse: self.badge_clicked.emit(v, t))
             bcol_layout.addWidget(b)
         if badges.get("media"):
-            b = QLabel(f"\U0001f5bc {badges['media']}")
-            b.setStyleSheet(BADGE_STYLE.format(color="#f38ba8"))
+            b = _BadgeLabel("media", f"\U0001f5bc {badges['media']}",
+                            "#f38ba8", book, chapter, verse)
+            b.clicked.connect(lambda t, v=verse: self.badge_clicked.emit(v, t))
             bcol_layout.addWidget(b)
 
         layout.addWidget(badge_col)

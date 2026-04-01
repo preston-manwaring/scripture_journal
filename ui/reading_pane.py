@@ -65,6 +65,7 @@ class ReadingPane(QWidget):
     chapter_loaded = pyqtSignal(str, int)          # book, chapter
     lookup_word = pyqtSignal(str)                  # forwarded from VerseWidget
     navigate_requested = pyqtSignal(str, int, int) # book, chapter, verse (from search results)
+    badge_activated = pyqtSignal(str)              # badge_type: commentary|crosslinks|media
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -74,6 +75,11 @@ class ReadingPane(QWidget):
         self._verse_widgets: dict[int, VerseWidget] = {}
         self._diff_mode = False
         self._diff_edition_b = "1830"
+
+        # Navigation history
+        self._nav_history: list[tuple[str, int, int]] = []
+        self._nav_pos: int = -1
+        self._nav_jumping: bool = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -85,6 +91,30 @@ class ReadingPane(QWidget):
         tb_layout = QHBoxLayout(toolbar)
         tb_layout.setContentsMargins(12, 6, 12, 6)
         tb_layout.setSpacing(10)
+
+        _nav_btn_style = f"""
+            QPushButton {{
+                background: transparent; color: {SUBTEXT}; border: none;
+                border-radius: 4px; padding: 2px 6px; font-size: 16px;
+            }}
+            QPushButton:hover:enabled {{ background: {OVERLAY}; color: {TEXT}; }}
+            QPushButton:disabled {{ color: {OVERLAY1}; }}
+        """
+        self._back_btn = QPushButton("←")
+        self._back_btn.setFixedWidth(30)
+        self._back_btn.setToolTip("Back")
+        self._back_btn.setEnabled(False)
+        self._back_btn.setStyleSheet(_nav_btn_style)
+        self._back_btn.clicked.connect(self._nav_back)
+        tb_layout.addWidget(self._back_btn)
+
+        self._fwd_btn = QPushButton("→")
+        self._fwd_btn.setFixedWidth(30)
+        self._fwd_btn.setToolTip("Forward")
+        self._fwd_btn.setEnabled(False)
+        self._fwd_btn.setStyleSheet(_nav_btn_style)
+        self._fwd_btn.clicked.connect(self._nav_forward)
+        tb_layout.addWidget(self._fwd_btn)
 
         self._title_label = QLabel("Select a chapter")
         self._title_label.setStyleSheet(f"color: {TEXT}; font-size: 14px; font-weight: bold;")
@@ -239,11 +269,12 @@ class ReadingPane(QWidget):
             text = vrow["text"]
             badges = badge_counts.get(v_num, {})
             whl = word_hls.get(v_num, [])
-            w = VerseWidget(v_num, text, badges, word_highlights=whl)
+            w = VerseWidget(self._book, self._chapter, v_num, text, badges, word_highlights=whl)
             w.clicked.connect(self._select)
             w.lookup_word.connect(self.lookup_word)
             w.word_hl_requested.connect(self._on_word_hl_add)
             w.word_hl_remove_requested.connect(self._on_word_hl_remove)
+            w.badge_clicked.connect(self._on_badge_clicked)
             self._verses_layout.insertWidget(self._verses_layout.count() - 1, w)
             self._verse_widgets[v_num] = w
 
@@ -262,12 +293,59 @@ class ReadingPane(QWidget):
         if self._diff_mode:
             self._show_diff_for(verse)
         if self._book:
+            self._push_nav(self._book, self._chapter, verse)
             self.verse_activated.emit(self._book, self._chapter, verse)
+
+    def _push_nav(self, book: str, chapter: int, verse: int):
+        if self._nav_jumping:
+            return
+        entry = (book, chapter, verse)
+        if self._nav_pos >= 0 and self._nav_history[self._nav_pos] == entry:
+            return
+        # Discard any forward history
+        self._nav_history = self._nav_history[:self._nav_pos + 1]
+        self._nav_history.append(entry)
+        self._nav_pos = len(self._nav_history) - 1
+        self._update_nav_buttons()
+
+    def _nav_back(self):
+        if self._nav_pos <= 0:
+            return
+        self._nav_jumping = True
+        self._nav_pos -= 1
+        book, chapter, verse = self._nav_history[self._nav_pos]
+        if (book, chapter) != (self._book, self._chapter):
+            self.navigate_requested.emit(book, chapter, verse)
+        else:
+            self._select(verse)
+        self._nav_jumping = False
+        self._update_nav_buttons()
+
+    def _nav_forward(self):
+        if self._nav_pos >= len(self._nav_history) - 1:
+            return
+        self._nav_jumping = True
+        self._nav_pos += 1
+        book, chapter, verse = self._nav_history[self._nav_pos]
+        if (book, chapter) != (self._book, self._chapter):
+            self.navigate_requested.emit(book, chapter, verse)
+        else:
+            self._select(verse)
+        self._nav_jumping = False
+        self._update_nav_buttons()
+
+    def _update_nav_buttons(self):
+        self._back_btn.setEnabled(self._nav_pos > 0)
+        self._fwd_btn.setEnabled(self._nav_pos < len(self._nav_history) - 1)
 
     def _scroll_to(self, verse: int):
         w = self._verse_widgets.get(verse)
         if w:
             QTimer.singleShot(50, lambda: self._scroll.ensureWidgetVisible(w, 0, 80))
+
+    def _on_badge_clicked(self, verse: int, badge_type: str):
+        self._select(verse)
+        self.badge_activated.emit(badge_type)
 
     def _on_word_hl_add(self, verse: int, start: int, end: int, color: str):
         if not self._book:

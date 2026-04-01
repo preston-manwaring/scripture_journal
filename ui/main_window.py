@@ -16,6 +16,7 @@ from ui.export_widget import ExportDialog
 from ui.search_widget import SearchDialog
 from ui.dictionary_widget import DictionaryDialog
 from ui.todo_widget import TodoDialog
+from ui.tag_widget import TagDialog
 from ui.themes import DARK, SURFACE, OVERLAY, OVERLAY1, SUBTEXT, TEXT, ACCENT, THEME_NAMES
 from backend.db_api import get_pref, set_pref
 from version import __version__, APP_NAME
@@ -80,6 +81,7 @@ class MainWindow(QMainWindow):
         self._reading.verse_activated.connect(self._on_verse_activated)
         self._reading.chapter_loaded.connect(self._on_chapter_loaded)
         self._reading.navigate_requested.connect(self._navigate_to)
+        self._reading.badge_activated.connect(self._on_badge_activated)
         v_split.addWidget(self._reading)
 
         # Detail tabs (bottom)
@@ -93,6 +95,7 @@ class MainWindow(QMainWindow):
         self._tabs.addTab(self._commentary, "Commentary")
 
         self._crosslinks = CrossLinkWidget()
+        self._crosslinks.set_edition_getter(self._reading.current_edition)
         self._crosslinks.navigate_to.connect(self._navigate_to)
         self._crosslinks.changed.connect(self._reading.refresh_badges)
         self._tabs.addTab(self._crosslinks, "Cross-links")
@@ -130,6 +133,10 @@ class MainWindow(QMainWindow):
         # ── TODO dialog ───────────────────────────────────────────────────────
         self._todo_dlg = TodoDialog(self)
         self._todo_dlg.navigate_to.connect(self._navigate_to)
+
+        # ── Tag dialog ────────────────────────────────────────────────────────
+        self._tag_dlg = TagDialog(self)
+        self._tag_dlg.navigate_to.connect(self._navigate_to)
 
         # ── Search dialog (Cmd+F) ─────────────────────────────────────────────
         self._search_dlg = SearchDialog(
@@ -180,6 +187,11 @@ class MainWindow(QMainWindow):
         todo_action.triggered.connect(self._show_todo)
         view_menu.addAction(todo_action)
 
+        tag_action = QAction("Tag Tracker", self)
+        tag_action.setShortcut(QKeySequence("Ctrl+G"))
+        tag_action.triggered.connect(self._show_tags)
+        view_menu.addAction(tag_action)
+
         view_menu.addSeparator()
 
         dict_action = QAction("Dictionary (1828 Webster's)...", self)
@@ -218,6 +230,12 @@ class MainWindow(QMainWindow):
     def _on_chapter_loaded(self, book: str, chapter: int):
         pass  # sidebar already reflects state; could sync here if needed
 
+    def _on_badge_activated(self, badge_type: str):
+        tab = {"commentary": 0, "crosslinks": 1, "media": 2}.get(badge_type)
+        if tab is not None:
+            self._tabs.setCurrentIndex(tab)
+            self._tabs.raise_()
+
     def _on_verse_activated(self, book: str, chapter: int, verse: int):
         self._current = (book, chapter, verse)
         self._status_label.setText(f"{book}  {chapter}:{verse}")
@@ -250,9 +268,16 @@ class MainWindow(QMainWindow):
         self._todo_dlg.show()
         self._todo_dlg.raise_()
 
+    def _show_tags(self):
+        self._tag_dlg.refresh()
+        self._tag_dlg.show()
+        self._tag_dlg.raise_()
+
     def _on_notes_changed(self):
         if self._todo_dlg.isVisible():
             self._todo_dlg.refresh()
+        if self._tag_dlg.isVisible():
+            self._tag_dlg.refresh()
 
     # ── Theme ─────────────────────────────────────────────────────────────────
 

@@ -3,8 +3,11 @@ Pure-Python DB API for the PyQt6 UI.
 No FastAPI/pydantic dependency — just sqlite3 via backend.database.
 """
 from __future__ import annotations
+import re as _re
 from datetime import datetime, timezone
 from backend.database import get_connection, get_readonly_connection
+
+_TAG_RE = _re.compile(r'#([A-Za-z0-9_-]+)')
 from backend.services.verse_reconstructor import ABSENT_CHAR, wid_sort_key
 import difflib
 
@@ -146,7 +149,9 @@ def create_commentary(
                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (book, chapter, verse, edition, body, now, now),
             )
-        return cur.lastrowid
+            note_id = cur.lastrowid
+            _sync_note_tags(conn, note_id, body)
+        return note_id
     finally:
         conn.close()
 
@@ -160,6 +165,7 @@ def update_commentary(commentary_id: int, body: str) -> None:
                 "UPDATE commentary SET body=?, updated_at=? WHERE id=?",
                 (body, now, commentary_id),
             )
+            _sync_note_tags(conn, commentary_id, body)
     finally:
         conn.close()
 
@@ -168,7 +174,61 @@ def delete_commentary(commentary_id: int) -> None:
     conn = get_connection()
     try:
         with conn:
+            conn.execute("DELETE FROM note_tags WHERE note_id=?", (commentary_id,))
             conn.execute("DELETE FROM commentary WHERE id=?", (commentary_id,))
+            _prune_orphan_tags(conn)
+    finally:
+        conn.close()
+
+
+# ── Tag helpers ────────────────────────────────────────────────────────────────
+
+def _sync_note_tags(conn, note_id: int, body: str) -> None:
+    """Rebuild tag index for a single note. Must be called inside an open transaction."""
+    names = {m.group(1).lower() for m in _TAG_RE.finditer(body)}
+    conn.execute("DELETE FROM note_tags WHERE note_id=?", (note_id,))
+    for name in names:
+        conn.execute("INSERT OR IGNORE INTO tags (name) VALUES (?)", (name,))
+        conn.execute(
+            "INSERT OR IGNORE INTO note_tags (note_id, tag_id) "
+            "SELECT ?, id FROM tags WHERE name=? COLLATE NOCASE",
+            (note_id, name),
+        )
+
+
+def _prune_orphan_tags(conn) -> None:
+    """Remove tags no longer referenced by any note."""
+    conn.execute(
+        "DELETE FROM tags WHERE id NOT IN (SELECT DISTINCT tag_id FROM note_tags)"
+    )
+
+
+def get_all_tags() -> list[str]:
+    """Return all tag names sorted case-insensitively."""
+    conn = get_readonly_connection()
+    try:
+        rows = conn.execute(
+            "SELECT name FROM tags ORDER BY name COLLATE NOCASE"
+        ).fetchall()
+        return [r["name"] for r in rows]
+    finally:
+        conn.close()
+
+
+def get_notes_for_tag(tag: str) -> list[dict]:
+    """Return all notes that contain the given tag, ordered by book/chapter/verse."""
+    conn = get_readonly_connection()
+    try:
+        rows = conn.execute(
+            """SELECT c.id, c.book, c.chapter, c.verse, c.body
+               FROM commentary c
+               JOIN note_tags nt ON nt.note_id = c.id
+               JOIN tags t ON t.id = nt.tag_id
+               WHERE t.name = ? COLLATE NOCASE
+               ORDER BY c.book, c.chapter, c.verse""",
+            (tag,),
+        ).fetchall()
+        return [dict(r) for r in rows]
     finally:
         conn.close()
 
@@ -216,14 +276,16 @@ def get_crosslinks(book: str, chapter: int, verse: int) -> dict:
     conn = get_readonly_connection()
     try:
         outbound = conn.execute(
-            """SELECT id, target_book, target_chapter, target_verse, note, created_at
+            """SELECT id, target_book, target_chapter, target_verse, target_verse_end,
+                      note, created_at
                FROM cross_links
                WHERE source_book=? AND source_chapter=? AND source_verse=?
                ORDER BY created_at""",
             (book, chapter, verse),
         ).fetchall()
         inbound = conn.execute(
-            """SELECT id, source_book, source_chapter, source_verse, note, created_at
+            """SELECT id, source_book, source_chapter, source_verse,
+                      note, created_at
                FROM cross_links
                WHERE target_book=? AND target_chapter=? AND target_verse=?
                ORDER BY created_at""",
@@ -237,22 +299,44 @@ def get_crosslinks(book: str, chapter: int, verse: int) -> dict:
         conn.close()
 
 
+def get_verse_range_text(
+    book: str, chapter: int, verse_start: int, verse_end: int | None, edition: str
+) -> str:
+    """Return concatenated verse text for a single verse or range."""
+    end = verse_end if (verse_end and verse_end > verse_start) else verse_start
+    conn = get_readonly_connection()
+    try:
+        rows = conn.execute(
+            """SELECT verse, text FROM verses
+               WHERE book=? AND chapter=? AND edition=?
+                 AND verse BETWEEN ? AND ?
+               ORDER BY verse""",
+            (book, chapter, edition, verse_start, end),
+        ).fetchall()
+    finally:
+        conn.close()
+    return "\n".join(f"{r['verse']}  {r['text']}" for r in rows)
+
+
 def create_crosslink(
     source_book: str, source_chapter: int, source_verse: int,
     target_book: str, target_chapter: int, target_verse: int,
     note: str | None = None,
+    target_verse_end: int | None = None,
 ) -> int:
     now = datetime.now(timezone.utc).isoformat()
+    end = target_verse_end if (target_verse_end and target_verse_end > target_verse) else None
     conn = get_connection()
     try:
         with conn:
             cur = conn.execute(
                 """INSERT INTO cross_links
                    (source_book, source_chapter, source_verse,
-                    target_book, target_chapter, target_verse, note, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    target_book, target_chapter, target_verse, target_verse_end,
+                    note, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (source_book, source_chapter, source_verse,
-                 target_book, target_chapter, target_verse, note, now),
+                 target_book, target_chapter, target_verse, end, note, now),
             )
         return cur.lastrowid
     finally:

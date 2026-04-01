@@ -1,11 +1,63 @@
+import re as _re
+
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
     QTextEdit, QPushButton, QLabel, QSizePolicy, QFrame,
 )
-from PyQt6.QtCore import pyqtSignal, Qt
-from backend.db_api import get_commentary, create_commentary, update_commentary, delete_commentary
+from PyQt6.QtCore import pyqtSignal, Qt, QEvent
+from PyQt6.QtGui import QTextCursor
+
+from backend.db_api import (
+    get_commentary, create_commentary, update_commentary, delete_commentary,
+    get_all_tags,
+)
 from ui.themes import DARK, SURFACE, ELEVATED, OVERLAY, OVERLAY1, DIM, SUBTEXT, TEXT, ACCENT, RED
 from ui.spell_checker import SpellCheckHighlighter, apply_spell_context_menu
+
+_TAG_PREFIX_RE = _re.compile(r'#([A-Za-z0-9_-]*)$')
+
+
+class _TagPopup(QListWidget):
+    """Floating autocomplete popup for #tags."""
+
+    tag_chosen = pyqtSignal(str)   # emits the tag name (without #)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setFixedWidth(180)
+        self.setMaximumHeight(160)
+        self.setStyleSheet(f"""
+            QListWidget {{
+                background: {ELEVATED}; color: {TEXT};
+                border: 1px solid {ACCENT}; border-radius: 4px;
+                font-size: 12px; padding: 2px;
+            }}
+            QListWidget::item {{ padding: 3px 6px; }}
+            QListWidget::item:selected {{ background: {ACCENT}; color: #1e1e2e; }}
+        """)
+        self.itemClicked.connect(lambda item: self.tag_chosen.emit(item.text().lstrip("#")))
+
+    def populate(self, tags: list[str], prefix: str):
+        self.clear()
+        filtered = [t for t in tags if t.lower().startswith(prefix.lower())]
+        for t in filtered:
+            self.addItem(f"#{t}")
+        if self.count():
+            self.setCurrentRow(0)
+        h = min(self.count() * 26 + 6, 160)
+        self.setFixedHeight(h)
+        return bool(filtered)
+
+    def move_selection(self, delta: int):
+        row = self.currentRow() + delta
+        row = max(0, min(row, self.count() - 1))
+        self.setCurrentRow(row)
+
+    def current_tag(self) -> str | None:
+        item = self.currentItem()
+        return item.text().lstrip("#") if item else None
 
 
 def _item_style() -> str:
@@ -125,6 +177,11 @@ class CommentaryWidget(QWidget):
         self._spell_highlighter = SpellCheckHighlighter(self._editor.document())
         apply_spell_context_menu(self._editor)
 
+        # ── Tag autocomplete ──────────────────────────────────────────────────
+        self._tag_popup = _TagPopup()
+        self._tag_popup.tag_chosen.connect(self._complete_tag)
+        self._editor.installEventFilter(self)
+
     # ── Public API ────────────────────────────────────────────────────────────
 
     def load_verse(self, book: str, chapter: int, verse: int):
@@ -236,3 +293,60 @@ class CommentaryWidget(QWidget):
         self._save_btn.setEnabled(
             bool(self._editor.toPlainText().strip()) and self._book is not None
         )
+        self._update_tag_popup()
+
+    # ── Tag autocomplete ───────────────────────────────────────────────────────
+
+    def _update_tag_popup(self):
+        cursor = self._editor.textCursor()
+        pos = cursor.positionInBlock()
+        before = cursor.block().text()[:pos]
+        m = _TAG_PREFIX_RE.search(before)
+        if not m:
+            self._tag_popup.hide()
+            return
+        prefix = m.group(1)
+        tags = get_all_tags()
+        has_matches = self._tag_popup.populate(tags, prefix)
+        if not has_matches:
+            self._tag_popup.hide()
+            return
+        rect = self._editor.cursorRect()
+        global_pt = self._editor.mapToGlobal(rect.bottomLeft())
+        self._tag_popup.move(global_pt)
+        self._tag_popup.show()
+
+    def _complete_tag(self, tag: str):
+        self._tag_popup.hide()
+        cursor = self._editor.textCursor()
+        pos = cursor.positionInBlock()
+        before = cursor.block().text()[:pos]
+        m = _TAG_PREFIX_RE.search(before)
+        if not m:
+            return
+        # Replace the partial #prefix with the full #tag
+        chars_to_remove = len(m.group(0))  # includes the '#'
+        cursor.movePosition(QTextCursor.MoveOperation.Left,
+                            QTextCursor.MoveMode.KeepAnchor, chars_to_remove)
+        cursor.insertText(f"#{tag}")
+        self._editor.setTextCursor(cursor)
+
+    def eventFilter(self, obj, event):
+        if obj is self._editor and self._tag_popup.isVisible():
+            if event.type() == QEvent.Type.KeyPress:
+                key = event.key()
+                if key == Qt.Key.Key_Down:
+                    self._tag_popup.move_selection(1)
+                    return True
+                if key == Qt.Key.Key_Up:
+                    self._tag_popup.move_selection(-1)
+                    return True
+                if key in (Qt.Key.Key_Return, Qt.Key.Key_Tab):
+                    tag = self._tag_popup.current_tag()
+                    if tag:
+                        self._complete_tag(tag)
+                    return True
+                if key == Qt.Key.Key_Escape:
+                    self._tag_popup.hide()
+                    return True
+        return super().eventFilter(obj, event)
