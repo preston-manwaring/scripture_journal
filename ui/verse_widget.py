@@ -1,6 +1,6 @@
-from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QMenu, QToolTip
-from PyQt6.QtCore import pyqtSignal, Qt, QEvent, QPointF
-from PyQt6.QtGui import QCursor, QAction, QTextDocument, QTextCursor
+from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QMenu, QToolTip, QWidget
+from PyQt6.QtCore import pyqtSignal, Qt, QEvent, QPointF, QRect
+from PyQt6.QtGui import QCursor, QAction, QTextDocument, QTextCursor, QPainter, QColor
 
 from backend.db_api import HIGHLIGHT_COLORS
 from ui.themes import DIM, TEXT, ACCENT
@@ -69,6 +69,70 @@ def _make_word_hl_html(plain_text: str, word_highlights: list[dict]) -> str:
         parts.append(_he(plain_text[pos:]))
 
     return "".join(parts)
+
+
+_BAR_W = 3     # width of each bar in pixels
+_BAR_GAP = 3   # gap between bars and between gutter edge and first bar
+_BAR_RADIUS = 2
+
+# Colours cycling per distinct range (dark-theme friendly)
+BAR_COLORS = [
+    "#89b4fa",  # blue
+    "#a6e3a1",  # green
+    "#fab387",  # peach
+    "#cba6f7",  # mauve
+    "#f38ba8",  # red
+    "#89dceb",  # sky
+    "#f9e2af",  # yellow
+]
+
+
+class _RangeGutter(QWidget):
+    """
+    Narrow column drawn to the left of each verse showing coloured vertical
+    bars for every cross-link range that covers that verse.
+
+    *bars*   — list of {color, slot, position}
+               position: "top" | "middle" | "bottom"
+    *slots*  — total number of slots used in this chapter (sets fixed width)
+    """
+
+    def __init__(self, bars: list[dict], slots: int, parent=None):
+        super().__init__(parent)
+        w = slots * (_BAR_W + _BAR_GAP) + _BAR_GAP if slots > 0 else 0
+        self.setFixedWidth(w)
+        self._bars = bars
+
+    def paintEvent(self, event):
+        if not self._bars:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        h = self.height()
+
+        for bar in self._bars:
+            x = _BAR_GAP + bar["slot"] * (_BAR_W + _BAR_GAP)
+            pos = bar["position"]
+            color = QColor(bar["color"])
+            painter.setBrush(color)
+
+            if pos == "top":
+                # Rounded cap at top, extends to bottom edge (connects downward)
+                mid = h // 3
+                painter.drawRoundedRect(x, mid, _BAR_W, _BAR_RADIUS * 4,
+                                        _BAR_RADIUS, _BAR_RADIUS)  # cap
+                painter.drawRect(x, mid + _BAR_RADIUS * 2, _BAR_W, h - mid - _BAR_RADIUS * 2)
+            elif pos == "bottom":
+                # Extends from top edge, rounded cap at bottom
+                mid = h - h // 3
+                painter.drawRect(x, 0, _BAR_W, mid - _BAR_RADIUS * 2)
+                painter.drawRoundedRect(x, mid - _BAR_RADIUS * 2, _BAR_W, _BAR_RADIUS * 4,
+                                        _BAR_RADIUS, _BAR_RADIUS)  # cap
+            else:  # "middle" — full height, connects both ways
+                painter.drawRect(x, 0, _BAR_W, h)
+
+        painter.end()
 
 
 class _BadgeLabel(QLabel):
@@ -161,6 +225,8 @@ class VerseWidget(QFrame):
 
     def __init__(self, book: str, chapter: int, verse: int, text: str, badges: dict,
                  word_highlights: list[dict] | None = None,
+                 range_bars: list[dict] | None = None,
+                 gutter_slots: int = 0,
                  parent=None):
         super().__init__(parent)
         self._book = book
@@ -177,6 +243,10 @@ class VerseWidget(QFrame):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 6, 10, 6)
         layout.setSpacing(8)
+
+        # Range gutter (zero width when no ranges in chapter)
+        gutter = _RangeGutter(range_bars or [], gutter_slots)
+        layout.addWidget(gutter)
 
         self._num = QLabel(str(verse))
         self._num.setFixedWidth(28)

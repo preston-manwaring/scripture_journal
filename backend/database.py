@@ -155,10 +155,15 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_note_tags_note ON note_tags(note_id);
             CREATE INDEX IF NOT EXISTS idx_note_tags_tag  ON note_tags(tag_id);
         """)
-        # Live migration: add target_verse_end if absent (existing databases)
-        try:
-            conn.execute("ALTER TABLE cross_links ADD COLUMN target_verse_end INTEGER")
-            conn.commit()
-        except Exception:
-            pass  # column already exists
+        # Live migrations for cross_links (each wrapped individually — idempotent)
+        for _col_sql in [
+            "ALTER TABLE cross_links ADD COLUMN target_verse_end INTEGER",
+            "ALTER TABLE cross_links ADD COLUMN source_verse_end INTEGER",
+            "ALTER TABLE cross_links ADD COLUMN group_id INTEGER",
+        ]:
+            try:
+                conn.execute(_col_sql)
+                conn.commit()
+            except Exception:
+                pass  # column already exists
     conn.close()

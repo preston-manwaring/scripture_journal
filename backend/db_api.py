@@ -276,18 +276,21 @@ def get_crosslinks(book: str, chapter: int, verse: int) -> dict:
     conn = get_readonly_connection()
     try:
         outbound = conn.execute(
-            """SELECT id, target_book, target_chapter, target_verse, target_verse_end,
-                      note, created_at
+            """SELECT id, source_verse, source_verse_end,
+                      target_book, target_chapter, target_verse, target_verse_end,
+                      note, created_at, group_id
                FROM cross_links
-               WHERE source_book=? AND source_chapter=? AND source_verse=?
+               WHERE source_book=? AND source_chapter=?
+                 AND ? BETWEEN source_verse AND COALESCE(source_verse_end, source_verse)
                ORDER BY created_at""",
             (book, chapter, verse),
         ).fetchall()
         inbound = conn.execute(
-            """SELECT id, source_book, source_chapter, source_verse,
-                      note, created_at
+            """SELECT id, source_book, source_chapter, source_verse, source_verse_end,
+                      target_verse, target_verse_end, note, created_at, group_id
                FROM cross_links
-               WHERE target_book=? AND target_chapter=? AND target_verse=?
+               WHERE target_book=? AND target_chapter=?
+                 AND ? BETWEEN target_verse AND COALESCE(target_verse_end, target_verse)
                ORDER BY created_at""",
             (book, chapter, verse),
         ).fetchall()
@@ -297,6 +300,42 @@ def get_crosslinks(book: str, chapter: int, verse: int) -> dict:
         }
     finally:
         conn.close()
+
+
+def get_chapter_range_bars(book: str, chapter: int) -> list[dict]:
+    """
+    Return all multi-verse cross-link ranges touching this chapter (source or target side).
+    Used to draw gutter bars in the reading pane.
+    Deduplicates bidirectional pairs via group_id so each logical link yields one bar.
+    """
+    conn = get_readonly_connection()
+    try:
+        src = conn.execute(
+            """SELECT source_verse AS verse_start, source_verse_end AS verse_end,
+                      COALESCE(group_id, id) AS dedup_key
+               FROM cross_links
+               WHERE source_book=? AND source_chapter=?
+                 AND source_verse_end IS NOT NULL AND source_verse_end > source_verse""",
+            (book, chapter),
+        ).fetchall()
+        tgt = conn.execute(
+            """SELECT target_verse AS verse_start, target_verse_end AS verse_end,
+                      COALESCE(group_id, id) AS dedup_key
+               FROM cross_links
+               WHERE target_book=? AND target_chapter=?
+                 AND target_verse_end IS NOT NULL AND target_verse_end > target_verse""",
+            (book, chapter),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    seen: set[int] = set()
+    result: list[dict] = []
+    for row in list(src) + list(tgt):
+        if row["dedup_key"] not in seen:
+            seen.add(row["dedup_key"])
+            result.append({"verse_start": row["verse_start"], "verse_end": row["verse_end"]})
+    return sorted(result, key=lambda r: (r["verse_start"], r["verse_end"]))
 
 
 def get_verse_range_text(
@@ -323,22 +362,41 @@ def create_crosslink(
     target_book: str, target_chapter: int, target_verse: int,
     note: str | None = None,
     target_verse_end: int | None = None,
+    source_verse_end: int | None = None,
+    bidirectional: bool = True,
 ) -> int:
     now = datetime.now(timezone.utc).isoformat()
-    end = target_verse_end if (target_verse_end and target_verse_end > target_verse) else None
+    src_end = source_verse_end if (source_verse_end and source_verse_end > source_verse) else None
+    tgt_end = target_verse_end if (target_verse_end and target_verse_end > target_verse) else None
     conn = get_connection()
     try:
         with conn:
+            # Forward row (A → B)
             cur = conn.execute(
                 """INSERT INTO cross_links
-                   (source_book, source_chapter, source_verse,
+                   (source_book, source_chapter, source_verse, source_verse_end,
                     target_book, target_chapter, target_verse, target_verse_end,
                     note, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (source_book, source_chapter, source_verse,
-                 target_book, target_chapter, target_verse, end, note, now),
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (source_book, source_chapter, source_verse, src_end,
+                 target_book, target_chapter, target_verse, tgt_end, note, now),
             )
-        return cur.lastrowid
+            fwd_id = cur.lastrowid
+            conn.execute("UPDATE cross_links SET group_id=? WHERE id=?", (fwd_id, fwd_id))
+
+            if bidirectional:
+                # Reverse row (B → A) — source/target swapped
+                conn.execute(
+                    """INSERT INTO cross_links
+                       (source_book, source_chapter, source_verse, source_verse_end,
+                        target_book, target_chapter, target_verse, target_verse_end,
+                        note, created_at, group_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (target_book, target_chapter, target_verse, tgt_end,
+                     source_book, source_chapter, source_verse, src_end,
+                     note, now, fwd_id),
+                )
+        return fwd_id
     finally:
         conn.close()
 
@@ -347,7 +405,13 @@ def delete_crosslink(link_id: int) -> None:
     conn = get_connection()
     try:
         with conn:
-            conn.execute("DELETE FROM cross_links WHERE id=?", (link_id,))
+            row = conn.execute(
+                "SELECT group_id FROM cross_links WHERE id=?", (link_id,)
+            ).fetchone()
+            if row and row["group_id"] is not None:
+                conn.execute("DELETE FROM cross_links WHERE group_id=?", (row["group_id"],))
+            else:
+                conn.execute("DELETE FROM cross_links WHERE id=?", (link_id,))
     finally:
         conn.close()
 

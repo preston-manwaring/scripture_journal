@@ -38,7 +38,7 @@ def _ref_label(link: dict, direction: str) -> str:
         ve = link.get("target_verse_end")
     else:
         book, ch, vs = link["source_book"], link["source_chapter"], link["source_verse"]
-        ve = None  # inbound links don't store a range relative to source
+        ve = link.get("source_verse_end")
     if ve and ve > vs:
         return f"{book} {ch}:{vs}–{ve}"
     return f"{book} {ch}:{vs}"
@@ -133,7 +133,7 @@ class _LinkRow(QFrame):
         else:
             return get_verse_range_text(
                 link["source_book"], link["source_chapter"],
-                link["source_verse"], None,
+                link["source_verse"], link.get("source_verse_end"),
                 edition,
             )
 
@@ -203,9 +203,34 @@ class CrossLinkWidget(QWidget):
         layout.addWidget(sep)
 
         # ── Add new link ──────────────────────────────────────────────────────
-        add_label = QLabel("Add cross-link to:")
+        add_label = QLabel("Add cross-link:")
         add_label.setStyleSheet(f"color:{SUBTEXT}; font-size:12px; font-weight:bold;")
         layout.addWidget(add_label)
+
+        # Source range row
+        src_row = QHBoxLayout()
+        src_row.setSpacing(4)
+        from_lbl = QLabel("From:")
+        from_lbl.setStyleSheet(f"color:{SUBTEXT}; font-size:11px;")
+        src_row.addWidget(from_lbl)
+        self._src_label = QLabel("—")
+        self._src_label.setStyleSheet(f"color:{TEXT}; font-size:11px;")
+        src_row.addWidget(self._src_label)
+        dash_src = QLabel("–")
+        dash_src.setStyleSheet(f"color:{SUBTEXT}; font-size:12px;")
+        src_row.addWidget(dash_src)
+        self._sv_end_spin = QSpinBox()
+        self._sv_end_spin.setRange(1, 999)
+        self._sv_end_spin.setPrefix("v.")
+        self._sv_end_spin.setStyleSheet(_spin_style())
+        self._sv_end_spin.setToolTip("Extend source to a range (leave same as start for single verse)")
+        src_row.addWidget(self._sv_end_spin)
+        src_row.addStretch()
+        layout.addLayout(src_row)
+
+        to_lbl = QLabel("To:")
+        to_lbl.setStyleSheet(f"color:{SUBTEXT}; font-size:11px;")
+        layout.addWidget(to_lbl)
 
         form = QHBoxLayout()
         form.setSpacing(4)
@@ -267,6 +292,8 @@ class CrossLinkWidget(QWidget):
         self._chapter = chapter
         self._verse = verse
         self._verse_label.setText(f"{book} {chapter}:{verse}")
+        self._src_label.setText(f"{book} {chapter}:{verse}")
+        self._sv_end_spin.setValue(verse)
         self._refresh()
 
     # ── Private ───────────────────────────────────────────────────────────────
@@ -316,12 +343,14 @@ class CrossLinkWidget(QWidget):
         target_ch = self._ch_spin.value()
         target_v = self._v_spin.value()
         target_v_end = self._v_end_spin.value()
+        src_v_end = self._sv_end_spin.value()
         note = self._note_edit.text().strip() or None
         create_crosslink(
             self._book, self._chapter, self._verse,
             target_book, target_ch, target_v,
             note=note,
             target_verse_end=target_v_end if target_v_end > target_v else None,
+            source_verse_end=src_v_end if src_v_end > self._verse else None,
         )
         self._note_edit.clear()
         self._refresh()

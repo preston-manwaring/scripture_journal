@@ -7,8 +7,9 @@ from PyQt6.QtCore import pyqtSignal, Qt, QTimer
 from backend.db_api import (
     EDITIONS, get_chapter_verses, get_verse_badge_counts, get_diff,
     get_chapter_word_highlights, add_word_highlight, remove_word_highlight,
-    get_pref, set_pref, search_all,
+    get_pref, set_pref, search_all, get_chapter_range_bars,
 )
+from ui.verse_widget import BAR_COLORS
 from ui.verse_widget import VerseWidget
 from ui.themes import DARK, SURFACE, ELEVATED, OVERLAY, OVERLAY1, SUBTEXT, TEXT, ACCENT, RED, GREEN
 
@@ -264,12 +265,43 @@ class ReadingPane(QWidget):
         badge_counts = get_verse_badge_counts(self._book, self._chapter)
         word_hls = get_chapter_word_highlights(self._book, self._chapter, edition)
 
+        # ── Range gutter bars ─────────────────────────────────────────────────
+        raw_ranges = get_chapter_range_bars(self._book, self._chapter)
+        # Assign each range to a non-overlapping slot (greedy interval scheduling)
+        slot_ends: list[int] = []   # verse_end of last range in each slot
+        for rng in raw_ranges:
+            assigned = False
+            for i, end in enumerate(slot_ends):
+                if rng["verse_start"] > end:
+                    slot_ends[i] = rng["verse_end"]
+                    rng["slot"] = i
+                    assigned = True
+                    break
+            if not assigned:
+                rng["slot"] = len(slot_ends)
+                slot_ends.append(rng["verse_end"])
+        gutter_slots = len(slot_ends)
+
+        # Build per-verse bar list
+        verse_bars: dict[int, list[dict]] = {}
+        for i, rng in enumerate(raw_ranges):
+            color = BAR_COLORS[i % len(BAR_COLORS)]
+            vs, ve = rng["verse_start"], rng["verse_end"]
+            for v in range(vs, ve + 1):
+                pos = "top" if v == vs else "bottom" if v == ve else "middle"
+                verse_bars.setdefault(v, []).append(
+                    {"color": color, "slot": rng["slot"], "position": pos}
+                )
+
         for vrow in verses:
             v_num = vrow["verse"]
             text = vrow["text"]
             badges = badge_counts.get(v_num, {})
             whl = word_hls.get(v_num, [])
-            w = VerseWidget(self._book, self._chapter, v_num, text, badges, word_highlights=whl)
+            w = VerseWidget(self._book, self._chapter, v_num, text, badges,
+                            word_highlights=whl,
+                            range_bars=verse_bars.get(v_num, []),
+                            gutter_slots=gutter_slots)
             w.clicked.connect(self._select)
             w.lookup_word.connect(self.lookup_word)
             w.word_hl_requested.connect(self._on_word_hl_add)
