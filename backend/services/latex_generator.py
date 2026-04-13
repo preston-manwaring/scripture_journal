@@ -40,7 +40,7 @@ def _apply_word_highlights_latex(plain_text: str, word_highlights: list[dict]) -
         # Use pre-registered color name if available, else fall back to hex
         color_name = hl.get("_latex_color") or hl.get("color", "yellow")
         parts.append(
-            f"\\colorbox{{{color_name}}}{{{latex_escape(plain_text[s:e])}}}"
+            f"\\hlc{{{color_name}}}{{{latex_escape(plain_text[s:e])}}}"
         )
         pos = e
 

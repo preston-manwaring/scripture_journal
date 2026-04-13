@@ -4,9 +4,13 @@
 \usepackage[utf8]{inputenc}
 \usepackage{parskip}
 \usepackage{xcolor}
+\usepackage{soul}
 \usepackage{mdframed}
 \usepackage{hyperref}
 \usepackage{graphicx}
+
+% Breakable colour highlight — usage: \hlc{colorname}{text}
+\newcommand{\hlc}[2]{{\sethlcolor{#1}\hl{#2}}}
 
 \hypersetup{colorlinks=true, linkcolor=blue, urlcolor=blue}
 \setlength{\parindent}{0pt}
